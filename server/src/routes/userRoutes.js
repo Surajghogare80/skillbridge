@@ -3,8 +3,8 @@ const router = express.Router();
 const { verifyToken } = require("../middleware/authMiddleware");
 const authController = require('../controllers/authController');
 
-router.post('/register', authController.register);
-router.post('/login', authController.login);
+
 router.post('/enroll/:courseId', verifyToken, authController.enrollCourse);
-   
+router.get('/my-courses', verifyToken, authController.getMyCourses);
+
 module.exports = router;
