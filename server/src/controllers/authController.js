@@ -59,7 +59,13 @@ exports.login = async (req, res) => {
 
         res.status(200).json({ 
             message: "Login successful",
-            token
+            token,
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+            }
         });
 
     } catch (error) {
@@ -96,7 +102,25 @@ exports.enrollCourse = async (req, res) => {
     }
 };
 
-            
+// GET enrolled courses for logged-in user
+exports.getMyCourses = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).populate("enrolledCourses");
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+        res.status(200).json({
+            name: user.name,
+            email: user.email,
+            enrolledCourses: user.enrolledCourses,
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+
 
 
 
