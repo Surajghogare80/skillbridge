@@ -1,114 +1,101 @@
 import { createContext, useState, useEffect, useCallback } from 'react';
-import { loginUser, registerUser } from '../services/authService';
+import { 
+  auth, 
+  onAuthStateChanged, 
+  signOut as firebaseSignOut 
+} from '../firebase/firebase';
+import axios from 'axios';
+import toast from 'react-hot-toast';
 
-/* ─────────────────────────────────────────────────────────────
-   Storage keys — centralised so nothing is ever misspelled
-──────────────────────────────────────────────────────────────── */
-const TOKEN_KEY = 'skillbridge_token';
-const USER_KEY  = 'skillbridge_user';
-
-/* ─────────────────────────────────────────────────────────────
-   JWT payload decoder (no external library needed)
-   Returns null if the token is malformed or expired.
-──────────────────────────────────────────────────────────────── */
-const decodeToken = (token) => {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    // Reject if already expired
-    if (payload.exp * 1000 < Date.now()) return null;
-    return payload;
-  } catch {
-    return null;
-  }
-};
-
-/* ─────────────────────────────────────────────────────────────
-   Persist + read user info from localStorage.
-   We store the full user object (name, email, role, id) so
-   the UI can greet the user correctly without an extra API call.
-──────────────────────────────────────────────────────────────── */
-const readStoredUser = () => {
-  try {
-    const raw = localStorage.getItem(USER_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-};
-
-const saveStoredUser = (userObj) => {
-  localStorage.setItem(USER_KEY, JSON.stringify(userObj));
-};
-
-const clearStorage = () => {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
-};
-
-/* ─────────────────────────────────────────────────────────────
-   Context
-──────────────────────────────────────────────────────────────── */
 export const AuthContext = createContext(null);
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 export const AuthProvider = ({ children }) => {
-  // Initialise from localStorage on first render
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
-  const [user,  setUser]  = useState(() => {
-    const storedToken = localStorage.getItem(TOKEN_KEY);
-    if (!storedToken) return null;
-    // Validate token is not expired
-    const decoded = decodeToken(storedToken);
-    if (!decoded) { clearStorage(); return null; }
-    // Prefer the richer stored user object; fall back to just the id
-    return readStoredUser() || { id: decoded.id };
-  });
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
 
-  // Mark loading=false once initial state is set
-  useEffect(() => {
-    setLoading(false);
-  }, []);
+  /**
+   * Synchronize user with backend
+   */
+  const syncUserWithBackend = useCallback(async (firebaseUser, provider = 'email') => {
+    if (!firebaseUser) return null;
 
-  /* ── Login ── */
-  const login = useCallback(async (email, password) => {
-    // loginUser returns { message, token, user: { id, name, email, role } }
-    const data = await loginUser(email, password);
+    try {
+      const token = await firebaseUser.getIdToken();
+      
+      const response = await axios.post(`${API_URL}/auth/sync`, 
+        { authProvider: provider },
+        { 
+          headers: { Authorization: `Bearer ${token}` } 
+        }
+      );
 
-    // Validate the received token before trusting it
-    if (!decodeToken(data.token)) {
-      throw new Error('Received an invalid token from server.');
+      if (response.data.success) {
+        // Merge Firebase and MongoDB data
+        const userData = {
+          ...response.data.user,
+          uid: firebaseUser.uid,
+          emailVerified: firebaseUser.emailVerified,
+          token
+        };
+        setUser(userData);
+        return userData;
+      }
+    } catch (error) {
+      console.error("Backend sync failed:", error);
+      toast.error("Failed to sync user data with server.");
+      return null;
     }
-
-    localStorage.setItem(TOKEN_KEY, data.token);
-
-    // Merge JWT payload id with the richer user object from the response
-    const userObj = data.user
-      ? { ...data.user, id: data.user.id || data.user._id }
-      : { id: decodeToken(data.token)?.id };
-
-    saveStoredUser(userObj);
-    setToken(data.token);
-    setUser(userObj);
-
-    return data;
   }, []);
 
-  /* ── Register ── */
-  const register = useCallback(async (name, email, password) => {
-    return await registerUser(name, email, password);
+  /**
+   * Listen for Auth state changes
+   */
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setLoading(true);
+      if (firebaseUser) {
+        // User is signed in, sync with backend
+        await syncUserWithBackend(firebaseUser);
+      } else {
+        // User is signed out
+        setUser(null);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [syncUserWithBackend]);
+
+  /**
+   * Logout
+   */
+  const logout = useCallback(async () => {
+    try {
+      await firebaseSignOut(auth);
+      setUser(null);
+      toast.success("Logged out successfully");
+    } catch (error) {
+      toast.error("Logout failed: " + error.message);
+    }
   }, []);
 
-  /* ── Logout ── */
-  const logout = useCallback(() => {
-    clearStorage();
-    setToken(null);
-    setUser(null);
-  }, []);
+  const isAuthenticated = !!user;
 
-  const isAuthenticated = !!token && !!user;
+  const value = {
+    user,
+    loading,
+    isAuthenticating,
+    setIsAuthenticating,
+    isAuthenticated,
+    logout,
+    syncUserWithBackend
+  };
 
   return (
-    <AuthContext.Provider value={{ user, token, isAuthenticated, loading, login, register, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

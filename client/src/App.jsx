@@ -2,12 +2,14 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import ProtectedRoute from './components/ProtectedRoute';
+import { Toaster } from 'react-hot-toast';
 
 import Home      from './pages/Home';
 import Courses   from './pages/Courses';
 import Login     from './pages/Login';
 import Register  from './pages/Register';
 import Dashboard from './pages/Dashboard';
+import ForgotPassword from './pages/ForgotPassword';
 
 const App = () => {
   return (
@@ -15,11 +17,23 @@ const App = () => {
       <AuthProvider>
         <div style={{ minHeight: '100vh', background: 'var(--color-bg)' }}>
           <Navbar />
+          <Toaster 
+            position="top-center"
+            toastOptions={{
+              duration: 4000,
+              style: {
+                background: '#1c1c2e',
+                color: '#fff',
+                border: '1px solid rgba(99, 102, 241, 0.2)',
+              },
+            }}
+          />
           <Routes>
             <Route path="/"          element={<Home />} />
             <Route path="/courses"   element={<Courses />} />
             <Route path="/login"     element={<Login />} />
             <Route path="/register"  element={<Register />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
 
             {/* Protected */}
             <Route

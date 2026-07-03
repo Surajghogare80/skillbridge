@@ -1,127 +1,120 @@
-const User = require("../models/User"); // Import the User model
-const bcrypt = require("bcryptjs"); // Import bcrypt for password hashing
-const jwt = require("jsonwebtoken"); // Import jsonwebtoken for token generation
+const User = require('../models/User');
+const rateLimit = require('express-rate-limit');
 
-// User registration
-exports.register = async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-
-        // Check if the user already exists
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            return res.status(400).json({ message: "User already exists" });
-        }
-
-        // Hash the password
-        const hashedPassword = await bcrypt.hash(password, 10);//10 is salt rounds, which determines the complexity of the hashing process. A higher number means more security but also more time to hash the password.
-
-        // Create a new user
-        const user = new User({
-            name,
-            email,
-            password: hashedPassword,
-        });
-
-        await user.save();
-
-        res.status(201).json({ message: "User registered successfully" });
-
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server error" });
+// Rate limiting for auth routes
+exports.authRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: {
+        success: false,
+        message: "Too many requests from this IP, please try again after 15 minutes"
     }
-};
+});
 
-// User login
-exports.login = async (req, res) => {
+/**
+ * Synchronize Firebase user with MongoDB
+ * This handles both first-time signup and returning login
+ */
+exports.syncUser = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { uid, email, name, picture, email_verified } = req.user;
+        const { authProvider } = req.body; // 'google' or 'email'
 
-        // Check if the user exists
-        const user = await User.findOne({ email });
+        // Check if user exists in MongoDB
+        let user = await User.findOne({ firebaseUID: uid });
+
         if (!user) {
-            return res.status(400).json({ message: "Invalid credentials" });
+            // New user - Create in MongoDB
+            user = new User({
+                fullName: name || 'User',
+                email: email,
+                firebaseUID: uid,
+                authProvider: authProvider || (picture ? 'google' : 'email'),
+                profileImage: picture || '',
+                isEmailVerified: email_verified || false,
+                lastLogin: new Date()
+            });
+            await user.save();
+            console.log(`New user created: ${email}`);
+        } else {
+            // Existing user - Update lastLogin and potentially other info
+            user.lastLogin = new Date();
+            user.isEmailVerified = email_verified || user.isEmailVerified;
+            
+            // If user logged in with Google, maybe update their picture/name
+            if (picture) user.profileImage = picture;
+            if (name && !user.fullName) user.fullName = name;
+            
+            await user.save();
+            console.log(`User logged in: ${email}`);
         }
 
-        // Compare the password
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(400).json({ message: "Invalid credentials" });
-        }
-
-        // Generate a JWT token
-        const token = jwt.sign(
-            { id: user._id }, // Payload of the token, which includes the user's ID
-            process.env.JWT_SECRET, // Secret key for signing the token, which should be stored in an environment variable for security
-            { expiresIn: "1d" } // Token expiration time, which is set to 1 day in this case
-        );
-
-        res.status(200).json({ 
-            message: "Login successful",
-            token,
+        res.status(200).json({
+            success: true,
+            message: "User synchronized successfully",
             user: {
                 id: user._id,
-                name: user.name,
+                fullName: user.fullName,
                 email: user.email,
                 role: user.role,
+                profileImage: user.profileImage,
+                isEmailVerified: user.isEmailVerified
             }
         });
 
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server error" });
+        console.error("Sync user error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Internal server error during user synchronization",
+            error: error.message
+        });
     }
 };
 
-// ENROLL COURSE
+// Placeholder for other auth methods if needed
+exports.register = async (req, res) => {
+    res.status(400).json({ message: "Use Firebase for registration and call /sync" });
+};
+
+exports.login = async (req, res) => {
+    res.status(400).json({ message: "Use Firebase for login and call /sync" });
+};
+
 exports.enrollCourse = async (req, res) => {
+    // This would normally be in a course controller, but keeping it for now to avoid breaking existing routes
     try {
-        const userId = req.user.id;
-        const courseId = req.params.courseId;
+        const { courseId } = req.params;
+        const userId = req.user.uid; // Firebase UID
 
-        const user = await User.findById(userId);
+        const user = await User.findOne({ firebaseUID: userId });
+        if (!user) return res.status(404).json({ message: "User not found" });
 
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        // Check if already enrolled
         if (user.enrolledCourses.includes(courseId)) {
-            return res.status(400).json({ message: "Already enrolled" });
+            return res.status(400).json({ message: "Already enrolled in this course" });
         }
 
         user.enrolledCourses.push(courseId);
         await user.save();
 
-        res.status(200).json({ message: "Enrolled successfully" });
-
+        res.status(200).json({ success: true, message: "Enrolled successfully" });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server error" });
+        res.status(500).json({ message: error.message });
     }
 };
 
-// GET enrolled courses for logged-in user
 exports.getMyCourses = async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).populate("enrolledCourses");
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-        res.status(200).json({
-            name: user.name,
-            email: user.email,
-            enrolledCourses: user.enrolledCourses,
+        const userId = req.user.uid;
+        const user = await User.findOne({ firebaseUID: userId }).populate('enrolledCourses');
+        
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+        res.status(200).json({ 
+            success: true, 
+            courses: user.enrolledCourses 
         });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server error" });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
-
-
-
-
-
-
